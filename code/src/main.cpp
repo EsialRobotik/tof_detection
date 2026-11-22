@@ -108,7 +108,8 @@ void initializeSensors() {
         // Le tof n'a pas répondu
         } else {
             tofs_pool[i].init_ok = false;
-            i2c_mux.write(tofs_pool[i].xshut_port, PCA95x5::Level::L); // remise de xshut à la masse pour éviter un éventuel conflit d'adresse avec un TOF mal initialisé
+            i2c_mux.write(tofs_pool[i].xshut_port, PCA95x5::Level::L); // remise de xshut à la masse pour éviter un éventuel conflit d'adresse avec un TOF mal initialisé qui se réveillerait
+            delay(5); // on laisse le temps au ToF de s'éteindre
             Serial.println(" err");
         }
     }
@@ -142,7 +143,7 @@ void sensorValuesToSerial() {
         if (i > 0) {
             Serial.print(';');
         }
-        if (tofs_pool[i].tof.dataReady()) {
+        if (tofs_pool[i].init_ok) {
             uint16_t distance = tofs_pool[i].tof.read();
             Serial.print(distance);
             tofs_pool[i].last_distance = distance;
