@@ -13,6 +13,8 @@
 #define COLOR_ORDER GRB
 #define I2C_MUX_ADDR 0x20
 
+#define DISTANCE_REFRESH_PREIOD_MS 10 // max expérimental
+
 struct TOF {
     VL53L1X tof;
     uint8_t i2c_address;
@@ -76,6 +78,8 @@ void initializeSensors() {
     for (int i=0; i<TOF_COUNT; i++) {
         Serial.print("# init tof ");
         Serial.print(i);
+        Serial.print(" i2c ");
+        Serial.print(tofs_pool[i].i2c_bus == &i2c_a ? "A" : "B");
         Serial.print(" addr 0x");
         Serial.print(tofs_pool[i].i2c_address, HEX);
         Serial.print("...");
@@ -85,7 +89,7 @@ void initializeSensors() {
         tofs_pool[i].tof.setTimeout(50);
         tofs_pool[i].tof.setAddress(0x29); // Adresse par défaut du TOF après boot
 
-        strip.setPixelColor(tofs_pool[i].led_idx, 0, 0, 255);
+        strip.setPixelColor(tofs_pool[i].led_idx, 0, 0, 32);
         strip.show();
 
         int retry_count = 3;
@@ -99,8 +103,8 @@ void initializeSensors() {
         if (retry_count > 0) {
             tofs_pool[i].tof.setAddress(tofs_pool[i].i2c_address);
             tofs_pool[i].tof.setDistanceMode(VL53L1X::Short);
-            tofs_pool[i].tof.setMeasurementTimingBudget(49000);
-            tofs_pool[i].tof.startContinuous(50); // 1 mesure toutes les 50ms
+            tofs_pool[i].tof.setMeasurementTimingBudget((DISTANCE_REFRESH_PREIOD_MS - 2) * 1000);
+            tofs_pool[i].tof.startContinuous((DISTANCE_REFRESH_PREIOD_MS - 1));
             tofs_pool[i].init_ok = true;
             Serial.println(" ok");
             strip.setPixelColor(tofs_pool[i].led_idx, 0, 255, 0);
@@ -109,6 +113,7 @@ void initializeSensors() {
         } else {
             tofs_pool[i].init_ok = false;
             i2c_mux.write(tofs_pool[i].xshut_port, PCA95x5::Level::L); // remise de xshut à la masse pour éviter un éventuel conflit d'adresse avec un TOF mal initialisé qui se réveillerait
+            tofs_pool[i].i2c_bus->begin(); // bug de la lib i2c Arduino pour stm32 : mauvaise gestion des nack, ça plante le bus i2c et il faut le reboot. Viel adage débrancher / rebrancher :p
             delay(5); // on laisse le temps au ToF de s'éteindre
             Serial.println(" err");
         }
@@ -124,15 +129,14 @@ void initializeLedStrip()
 
 void mapSensorsToLeds() {
     for (int i=0; i<TOF_COUNT; i++) {
-        uint16_t mes = tofs_pool[i].last_distance;
-        // Mise à jour de la couleur des LEDs : plus le ToF capt loin plus c'est vert, plus il capte près, plus c'est rouge
-        if (mes > 1500) {
-            strip.setPixelColor(tofs_pool[i].led_idx, strip.Color(0, 0, 0));
-        } else {
-            if (mes > 1000) {
-                mes = 1000;
+        if (tofs_pool[i].init_ok) {
+            uint16_t mes = tofs_pool[i].last_distance;
+            // Mise à jour de la couleur des LEDs : plus le ToF capt loin plus c'est vert, plus il capte près, plus c'est rouge
+            if (mes > 1500) {
+                strip.setPixelColor(tofs_pool[i].led_idx, strip.Color(0, 0, 0));
+            } else {
+                strip.setPixelColor(tofs_pool[i].led_idx, strip.Color(map(mes, 1500, 0, 0, 255), map(mes, 0, 1500, 0, 255), 0));
             }
-            strip.setPixelColor(tofs_pool[i].led_idx, strip.Color(map(mes, 1000, 0, 0, 255), map(mes, 0, 1000, 0, 255), 0));
         }
     }
     strip.show();
@@ -148,7 +152,7 @@ void sensorValuesToSerial() {
             Serial.print(distance);
             tofs_pool[i].last_distance = distance;
         } else {
-            Serial.print("n/a");
+            Serial.print('-');
         }
     }
     Serial.println();
@@ -176,8 +180,8 @@ void setup() {
 }
 
 void loop() {
-    if (millis() + 150 > lastHeartBeatTime) {
-        lastHeartBeatTime += 150;
+    if (millis() + DISTANCE_REFRESH_PREIOD_MS > lastHeartBeatTime) {
+        lastHeartBeatTime += DISTANCE_REFRESH_PREIOD_MS;
         sensorValuesToSerial();
         mapSensorsToLeds();
     }
