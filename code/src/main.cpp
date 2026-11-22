@@ -23,6 +23,8 @@ struct TOF {
     PCA95x5::Port::Port xshut_port;
     bool init_ok;
     uint16_t last_distance;
+    float last_millions_de_photons_par_sedonde;
+    float valid_measure;
 };
 
 PCA9535 i2c_mux;
@@ -32,18 +34,18 @@ TwoWire i2c_a; // A4 (Neucleo SDA_A broche P5A) / A5 (Nucleo SCL_A broche PA6)
 TwoWire i2c_b(9, 1); // D9 (Nucleo SDA_B broche PA8) / D1 (Nucleo SCL_B broche PA9)
 
 TOF tofs_pool[] = {
-    {VL53L1X(), 0x31, 0, &i2c_a, PCA95x5::Port::P00, false, 0},
-    {VL53L1X(), 0x33, 1, &i2c_a, PCA95x5::Port::P01, false, 0},
-    {VL53L1X(), 0x35, 2, &i2c_a, PCA95x5::Port::P02, false, 0},
-    {VL53L1X(), 0x37, 3, &i2c_a, PCA95x5::Port::P03, false, 0},
-    {VL53L1X(), 0x39, 4, &i2c_a, PCA95x5::Port::P04, false, 0},
-    {VL53L1X(), 0x3b, 5, &i2c_a, PCA95x5::Port::P05, false, 0},
-    {VL53L1X(), 0x3d, 6, &i2c_b, PCA95x5::Port::P06, false, 0},
-    {VL53L1X(), 0x3f, 7, &i2c_b, PCA95x5::Port::P07, false, 0},
-    {VL53L1X(), 0x41, 8, &i2c_b, PCA95x5::Port::P10, false, 0},
-    {VL53L1X(), 0x43, 9, &i2c_b, PCA95x5::Port::P11, false, 0},
-    {VL53L1X(), 0x45, 10, &i2c_b, PCA95x5::Port::P12, false, 0},
-    {VL53L1X(), 0x47, 11, &i2c_b, PCA95x5::Port::P13, false, 0},
+    {VL53L1X(), 0x31, 0, &i2c_a, PCA95x5::Port::P00, false, 0, 0, false},
+    {VL53L1X(), 0x33, 1, &i2c_a, PCA95x5::Port::P01, false, 0, 0, false},
+    {VL53L1X(), 0x35, 2, &i2c_a, PCA95x5::Port::P02, false, 0, 0, false},
+    {VL53L1X(), 0x37, 3, &i2c_a, PCA95x5::Port::P03, false, 0, 0, false},
+    {VL53L1X(), 0x39, 4, &i2c_a, PCA95x5::Port::P04, false, 0, 0, false},
+    {VL53L1X(), 0x3b, 5, &i2c_a, PCA95x5::Port::P05, false, 0, 0, false},
+    {VL53L1X(), 0x3d, 6, &i2c_b, PCA95x5::Port::P06, false, 0, 0, false},
+    {VL53L1X(), 0x3f, 7, &i2c_b, PCA95x5::Port::P07, false, 0, 0, false},
+    {VL53L1X(), 0x41, 8, &i2c_b, PCA95x5::Port::P10, false, 0, 0, false},
+    {VL53L1X(), 0x43, 9, &i2c_b, PCA95x5::Port::P11, false, 0, 0, false},
+    {VL53L1X(), 0x45, 10, &i2c_b, PCA95x5::Port::P12, false, 0, 0, false},
+    {VL53L1X(), 0x47, 11, &i2c_b, PCA95x5::Port::P13, false, 0, 0, false},
 };
 int TOF_COUNT = sizeof(tofs_pool)/sizeof(TOF);
 
@@ -135,7 +137,14 @@ void mapSensorsToLeds() {
             if (mes > 1500) {
                 strip.setPixelColor(tofs_pool[i].led_idx, strip.Color(0, 0, 0));
             } else {
-                strip.setPixelColor(tofs_pool[i].led_idx, strip.Color(map(mes, 1500, 0, 0, 255), map(mes, 0, 1500, 0, 255), 0));
+                // Mesure valide = on a détecté notre balise
+                if (tofs_pool[i].valid_measure) {
+                    strip.setPixelColor(tofs_pool[i].led_idx, strip.Color(map(mes, 1500, 0, 0, 255), map(mes, 0, 1500, 0, 255), 0));
+                // Mesure invalide : on considère qu'on a détecté autre chose que notre balise et qu'on peut ignorer
+                } else {
+                    long mappedWhite = map(mes, 1500, 0, 0, 255);
+                    strip.setPixelColor(tofs_pool[i].led_idx, strip.Color(mappedWhite, mappedWhite, mappedWhite));
+                }
             }
         }
     }
@@ -148,9 +157,28 @@ void sensorValuesToSerial() {
             Serial.print(';');
         }
         if (tofs_pool[i].init_ok) {
-            uint16_t distance = tofs_pool[i].tof.read();
-            Serial.print(distance);
-            tofs_pool[i].last_distance = distance;
+            tofs_pool[i].tof.read();
+            VL53L1X::RangingData data = tofs_pool[i].tof.ranging_data;
+            float photons = tofs_pool[i].tof.ranging_data.peak_signal_count_rate_MCPS;
+
+            // Formule savante de Claude pour calculer la valeur de réflectance en fonction du nombre de photons reçus et de la distance
+            // Généré expérimentalement à partir de mesures à 10, 20 et 30cm sur un catadioptre arrière de vélo : repsectivements 220 à 265 / 140 - 150 / 85 - 95
+            float r = photons * exp(0.00495 * (float) data.range_mm);
+
+            if (r > 200.) { // Valeur indiquée par Claude : si r > 200 alors c'est le catadioptre qu'on voit
+                tofs_pool[i].last_millions_de_photons_par_sedonde = photons;
+                tofs_pool[i].last_distance = data.range_mm;
+                tofs_pool[i].valid_measure = true;
+            } else {
+                tofs_pool[i].last_millions_de_photons_par_sedonde = photons;
+                tofs_pool[i].last_distance = data.range_mm;
+                tofs_pool[i].valid_measure = false;
+            }
+            Serial.print(data.range_mm);
+            Serial.print('/');
+            Serial.print(r);
+            Serial.print('/');
+            Serial.print(photons);
         } else {
             Serial.print('-');
         }
